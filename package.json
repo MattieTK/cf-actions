@@ -7,10 +7,10 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "types": "wrangler types",
-    "typecheck": "tsc --noEmit",
+    "dev": "cf dev",
+    "deploy": "cf deploy",
+    "types": "cf workers types",
+    "typecheck": "cf workers types && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -20,6 +20,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.0",
     "@types/node": "^24.19.2",
+    "cf": "1.0.0-beta.14",
     "typescript": "5.9.3",
     "vitest": "4.1.11",
     "wrangler": "4.149.0"

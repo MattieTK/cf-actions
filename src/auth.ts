@@ -6,7 +6,7 @@ import { constantTimeEqualStrings } from "./crypto";
  */
 export function requireAdmin(request: Request, adminToken: string | undefined): Response | null {
 	if (!adminToken) {
-		return new Response("ADMIN_TOKEN is not configured. Set it with `wrangler secret put ADMIN_TOKEN`.", {
+		return new Response("ADMIN_TOKEN is not configured. Upload it with `cf deploy --secrets-file <file>`.", {
 			status: 503,
 		});
 	}

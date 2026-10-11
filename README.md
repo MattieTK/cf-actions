@@ -4,8 +4,6 @@ Run GitHub Actions jobs on Cloudflare Containers in your own Cloudflare account.
 
 You deploy one Worker. It creates a private GitHub App for you, then starts a fresh container for every job that asks for it with `runs-on: cf-2cpu`. The container runs GitHub's own runner for exactly one job and exits. Secrets, `GITHUB_TOKEN` and OIDC work exactly as on GitHub-hosted runners, because GitHub hands them to the runner directly.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/MattieTK/cf-actions)
-
 > **Status: early.** The Worker, image and tests are complete, but it has not yet been run end to end against real GitHub and Cloudflare accounts. See [Known unknowns](#known-unknowns).
 
 ## When this saves money
@@ -52,28 +50,34 @@ You need a Cloudflare account on the Workers Paid plan, which Containers require
 
 ### 1. Deploy the Worker
 
-Use the button above. It copies this repository into your GitHub account, builds the container image and deploys the Worker. When asked for secrets, generate each with `openssl rand -hex 32`:
-
-- `ADMIN_TOKEN` is the password for the setup and status pages.
-- `ENCRYPTION_KEY` encrypts the GitHub App's private key at rest. Do not change it after setup, or the stored key can no longer be read.
-
-Or deploy from a clone:
+The project is configured for [`cf`](https://github.com/cloudflare/cf), the Cloudflare CLI, through [`cloudflare.config.ts`](cloudflare.config.ts). `cf` is a dev dependency, so `pnpm cf` runs the pinned version. Deploying builds the container image locally, so Docker must be running.
 
 ```bash
 pnpm install
 ```
 
 ```bash
-pnpm wrangler deploy
+pnpm cf auth login
 ```
 
-```bash
-pnpm wrangler secret put ADMIN_TOKEN
-```
+Create a secrets file. It is ignored by git. Generate each value with `openssl rand -hex 32`:
+
+- `ADMIN_TOKEN` is the password for the setup and status pages.
+- `ENCRYPTION_KEY` encrypts the GitHub App's private key at rest. Do not change it after setup, or the stored key can no longer be read.
 
 ```bash
-pnpm wrangler secret put ENCRYPTION_KEY
+printf 'ADMIN_TOKEN=%s\nENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .cf-actions-secrets
 ```
+
+Deploy, uploading the secrets with the first version. Set `CLOUDFLARE_ACCOUNT_ID` if you can reach more than one account:
+
+```bash
+CLOUDFLARE_ACCOUNT_ID=<account-id> pnpm cf deploy --secrets-file .cf-actions-secrets
+```
+
+Later deploys keep the existing secrets, so `pnpm cf deploy` is enough.
+
+To deploy on every push instead, connect the repository with Workers Builds, either in the dashboard or with `cf builds triggers create`, and set its deploy command to `pnpm cf deploy`.
 
 ### 2. Create the GitHub App
 
@@ -121,7 +125,7 @@ Set `CF_DOCKER_HOST_NETWORK=0` in a step's environment to bypass the wrapper.
 
 ## Configuration
 
-Set these as `vars` in `wrangler.jsonc`:
+Set these in `env` in [`cloudflare.config.ts`](cloudflare.config.ts):
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -131,7 +135,7 @@ Set these as `vars` in `wrangler.jsonc`:
 | `MAX_JOB_MINUTES` | `360` | Hard limit on a container's lifetime. |
 | `RUNNER_GROUP_ID` | `1` | Runner group for organisation runners. By default the group only serves private repos. |
 
-Concurrency per size is limited by `max_instances` on each container in `wrangler.jsonc` (10 by default). When every instance of a size is busy, extra jobs wait in GitHub's queue while the backstop retries their launch. Retries back off from 1 minute to 15 minutes and stop after 3 hours, at which point the status page shows the launch as failed and the job stays queued until GitHub's own 24-hour timeout or until you cancel it.
+Concurrency per size is limited by `maxInstances` on each container in `cloudflare.config.ts` (10 by default). When every instance of a size is busy, extra jobs wait in GitHub's queue while the backstop retries their launch. Retries back off from 1 minute to 15 minutes and stop after 3 hours, at which point the status page shows the launch as failed and the job stays queued until GitHub's own 24-hour timeout or until you cancel it.
 
 ## Security
 
@@ -143,22 +147,22 @@ Concurrency per size is limited by `max_instances` on each container in `wrangle
 ## Updating
 
 - **Runner version.** GitHub refuses runners more than 30 days out of date. The runner updates itself at start-up when it is behind, which makes jobs start more slowly. Bump `RUNNER_VERSION` and `RUNNER_SHA256` in `container/Dockerfile` and redeploy to keep start-up fast.
-- **Deploys and running jobs.** `rollout_active_grace_period` is set so that a deploy does not replace containers that are mid-job. For Worker-only changes, `wrangler deploy --containers-rollout=none` skips the image rollout entirely.
+- **Deploys and running jobs.** Each container's `rollout.activeGracePeriod` is set so that a deploy does not replace containers that are mid-job. For Worker-only changes, `pnpm cf deploy --containers-rollout=none` skips the image rollout entirely.
 
 ## Known unknowns
 
 These parts could not be checked without a live deployment:
 
 - **Docker networking on Cloudflare.** The wrapper was tested locally under the same daemon restrictions (no iptables, no IP forwarding), but not on Cloudflare's own hosts.
-- **Deploy button.** Whether it builds container images. Workers Builds documents container support, but the button's docs do not mention it.
+- **`cf` is in beta.** Its commands and the `cloudflare.config.ts` format can still change before the stable release.
 - **JIT labels.** That GitHub accepts `self-hosted`, `Linux` and `X64` passed explicitly in just-in-time runner labels, as its own API example does.
-- **Rollout grace period.** That the platform accepts a 6-hour `rollout_active_grace_period`.
+- **Rollout grace period.** That the platform honours a 6-hour `rollout.activeGracePeriod`.
 - **Deleting a busy runner.** The idle check relies on GitHub refusing (422) to delete a runner that is mid-job. That closes the race between stopping an idle runner and GitHub assigning it a job.
 - **Environment approvals.** If GitHub sends `queued` before a job's environment approval rather than after it, each approval-gated job will hold an idle runner for up to the idle timeout.
 
 ## Development
 
-`pnpm test` runs two Vitest projects. The `unit` project tests the pure logic and the docker wrapper in Node. The `workers` project tests the ledger and App registry Durable Objects against real SQLite in the Workers runtime.
+`pnpm test` runs two Vitest projects. The `unit` project tests the pure logic and the docker wrapper in Node. The `workers` project tests the ledger and App registry Durable Objects against real SQLite in the Workers runtime. It uses its own small Wrangler config in `test/workers/`, because the Vitest integration still reads Wrangler configuration. `pnpm typecheck` regenerates the Worker types with `cf workers types` first.
 
 ```bash
 pnpm test

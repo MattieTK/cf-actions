@@ -2,9 +2,9 @@
   "compilerOptions": {
     "target": "es2023",
     "lib": ["es2023"],
-    "module": "es2022",
+    "module": "esnext",
     "moduleResolution": "bundler",
-    "types": ["./worker-configuration.d.ts"],
+    "types": ["./.cloudflare/types/index.d.ts"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -14,5 +14,5 @@
     "allowImportingTsExtensions": false,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "worker-configuration.d.ts"]
+  "include": ["src/**/*.ts", ".cloudflare/types/index.d.ts"]
 }

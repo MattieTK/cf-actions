@@ -152,6 +152,18 @@ An independent review found several problems in the first implementation. They a
 - **Webhook redelivery.** Redelivery follows pagination back to the 30-minute window.
 - **GitHub CLI.** `gh` is installed in the image.
 
+## Deployment with `cf` (11 October 2026)
+
+The project uses `cf`, the Cloudflare CLI (beta), instead of Wrangler. `cloudflare.config.ts` replaces `wrangler.jsonc`:
+
+- **Containers.** The three runner sizes are `defineContainer` entries, attached to their Durable Object classes through `exports.durableObject({ storage: "sqlite", container })`.
+- **Durable Object migrations.** Wrangler's tagged migrations are replaced by `cf`'s `exports` lifecycle declarations.
+- **Secrets.** `ADMIN_TOKEN` and `ENCRYPTION_KEY` are declared with `bindings.secret()` and uploaded with `cf deploy --secrets-file`.
+- **Types.** Worker types come from `cf workers types`. Durable Object bindings that name their own Worker by string are untyped there, so `src/env.d.ts` narrows them.
+- **Push-to-deploy.** The Workers Builds trigger runs `pnpm cf deploy`.
+
+For JavaScript Workers, `cf` still delegates bundling to Wrangler internally, so `wrangler` remains a dev dependency. The Vitest Workers integration also still needs a Wrangler config, so `test/workers/wrangler.jsonc` remains.
+
 ## Risks and assumptions
 
 - **Docker networking** needs checking on Cloudflare (see "Docker" above).

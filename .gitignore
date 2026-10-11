@@ -6,3 +6,6 @@ dist/
 
 # Generated production secrets (see README)
 .cf-actions-secrets
+
+# cf build output and generated types (regenerate with `pnpm types`)
+.cloudflare/
