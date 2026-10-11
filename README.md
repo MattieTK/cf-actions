@@ -112,6 +112,16 @@ To switch a repository between Cloudflare and GitHub without editing workflows, 
 
 [`examples/smoke-test.yml`](examples/smoke-test.yml) checks checkout, `setup-node`, secrets, OIDC, `docker run`, `docker build` and a Postgres service.
 
+## For coding agents
+
+[`skills/writing-cf-actions-workflows`](skills/writing-cf-actions-workflows/SKILL.md) is an agent skill that teaches coding agents to write workflows for these runners: the labels, which jobs to leave on GitHub, and the Docker networking rules. To make it available to Claude Code in every project, link it into your skills folder:
+
+```bash
+ln -s "$PWD/skills/writing-cf-actions-workflows" ~/.claude/skills/writing-cf-actions-workflows
+```
+
+Agents that read the cross-tool `~/.agents/skills/` folder can use the same link there.
+
 ## Docker in jobs
 
 Each container runs a Docker daemon, so Docker-based actions, `services:`, `container:` jobs and `docker build` are available. Cloudflare Containers do not allow iptables changes, though, so Docker cannot create working bridge networks. A small wrapper around the `docker` command puts containers on the host network instead. In practice:
