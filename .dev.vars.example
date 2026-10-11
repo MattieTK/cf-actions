@@ -1,0 +1,6 @@
+# Password for the /setup and status pages (HTTP basic auth, any username).
+# Generate with: openssl rand -hex 32
+ADMIN_TOKEN=
+# Key used to encrypt GitHub App credentials at rest. Do not change after setup.
+# Generate with: openssl rand -hex 32
+ENCRYPTION_KEY=

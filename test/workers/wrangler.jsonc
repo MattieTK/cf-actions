@@ -1,0 +1,14 @@
+// Test-only Worker exposing the storage Durable Objects (see vitest.config.ts).
+{
+  "name": "cf-actions-storage-test",
+  "main": "./entry.ts",
+  "compatibility_date": "2026-10-01",
+  "vars": { "ENCRYPTION_KEY": "test-encryption-key" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "JOB_LEDGER", "class_name": "JobLedger" },
+      { "name": "APP_REGISTRY", "class_name": "AppRegistry" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["JobLedger", "AppRegistry"] }]
+}

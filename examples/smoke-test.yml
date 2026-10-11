@@ -1,0 +1,62 @@
+# Copy to .github/workflows/ in a private repository where the cf-actions GitHub App is
+# installed. Each job checks one thing a typical workflow depends on.
+name: cf-actions smoke test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  basics:
+    runs-on: cf-2cpu
+    steps:
+      - uses: actions/checkout@v5
+      - name: Runner environment
+        run: |
+          echo "runner: $RUNNER_NAME on $(nproc) vCPU, $(free -g | awk '/Mem:/ {print $2}') GiB"
+          df -h /
+          sudo -n true && echo "passwordless sudo works"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node --version
+
+  secrets-and-oidc:
+    runs-on: cf-1cpu
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: GITHUB_TOKEN reaches the runner
+        run: gh api repos/${{ github.repository }} --jq .full_name
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: OIDC tokens can be requested
+        run: |
+          curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=cf-actions" | jq -r '.value | split(".") | length'
+
+  docker:
+    runs-on: cf-2cpu
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        # Services share the host network on cf-actions, so they listen on their own port.
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - run: docker run --rm alpine:3.20 echo "docker run works"
+      - name: Build an image that needs network access
+        run: |
+          printf 'FROM alpine:3.20\nRUN apk add --no-cache curl\n' > Dockerfile
+          docker build -t smoke .
+      - name: Reach the Postgres service on localhost
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          PGPASSWORD=postgres psql -h localhost -U postgres -c 'select 1'

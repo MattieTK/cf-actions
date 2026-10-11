@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.dev.vars
+dist/
+*.log
+
+# Generated production secrets (see README)
+.cf-actions-secrets
