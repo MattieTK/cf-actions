@@ -4,7 +4,7 @@ Run GitHub Actions jobs on Cloudflare Containers in your own Cloudflare account.
 
 You deploy one Worker. It creates a private GitHub App for you, then starts a fresh container for every job that asks for it with `runs-on: cf-2cpu`. The container runs GitHub's own runner for exactly one job and exits. Secrets, `GITHUB_TOKEN` and OIDC work exactly as on GitHub-hosted runners, because GitHub hands them to the runner directly.
 
-> **Status: early.** The Worker, image and tests are complete, but it has not yet been run end to end against real GitHub and Cloudflare accounts. See [Known unknowns](#known-unknowns).
+> **Status: early.** It has run real CI for a handful of private repositories since October 2026, and most of the behaviour it depends on has been tested on Cloudflare (see [Tested on Cloudflare](#tested-on-cloudflare)). A few things still have not (see [Known unknowns](#known-unknowns)).
 
 ## When this saves money
 
@@ -43,6 +43,15 @@ GitHub ──workflow_job webhook──▶ Worker ──▶ Runner Durable Objec
 4. A watchdog in each Durable Object stops containers that never get a job (after 10 minutes, once GitHub confirms the runner is idle) or that exceed the maximum job time (6 hours).
 
 Missed webhooks are redelivered by the cron backstop, and duplicate deliveries are harmless because each job maps to exactly one Durable Object.
+
+### Jobs that wait for an environment approval
+
+GitHub sends `queued` for a job before its environment approval and again once it is approved, so the Worker cannot tell from the first one that the job has to wait. It launches a runner straight away:
+
+- **Approved within the idle timeout (10 minutes):** that runner picks the job up.
+- **Approved later:** the watchdog has already stopped the idle runner. The second `queued` finds it stopped without having run a job, so the Durable Object checks with GitHub that the job is queued and launches a new runner for it, named with an attempt suffix (`cf-2cpu-<job>-2`). If the approval lands while the idle container is still shutting down, the backstop launches the new runner within a few minutes instead.
+
+Each attempt has its own row on the status page, so the idle time of the first runner still counts towards cost. Expect up to 10 minutes of idle container time per approval-gated job.
 
 ## Install
 
@@ -159,16 +168,22 @@ Concurrency per size is limited by `maxInstances` on each container in `cloudfla
 - **Runner version.** GitHub refuses runners more than 30 days out of date. The runner updates itself at start-up when it is behind, which makes jobs start more slowly. Bump `RUNNER_VERSION` and `RUNNER_SHA256` in `container/Dockerfile` and redeploy to keep start-up fast.
 - **Deploys and running jobs.** Each container's `rollout.activeGracePeriod` is set so that a deploy does not replace containers that are mid-job. For Worker-only changes, `pnpm cf deploy --containers-rollout=none` skips the image rollout entirely.
 
+## Tested on Cloudflare
+
+Checked against a live deployment on 12 October 2026, with workflows kept in a separate trials repository so they can be re-run after changes:
+
+- **Docker networking.** Services answer on `localhost`, `docker run` and `docker build` reach the internet, a `container:` job reaches a service on `localhost`, buildx works with `driver: docker`, and Docker Compose works with `network_mode: host`. Service hostnames do not resolve, as described in [Docker in jobs](#docker-in-jobs).
+- **JIT labels.** A live runner is registered with `self-hosted`, `Linux`, `X64` and its size label, so jobs that list any of those alongside the size label match.
+- **Rollout grace period.** A deploy that changed the image while two 20-minute jobs were running left both containers in place, and both jobs finished on the old image. New launches moved to the new image about 7 minutes after the deploy. The full 6 hours has not been tested.
+- **Deleting a busy runner.** GitHub refuses with `422` and "Runner … is currently running a job and cannot be deleted", and the job carries on. The idle check relies on this, and treats other 422s (validation errors, rate limiting) as "cannot tell, try again".
+- **Environment approvals.** GitHub sends `queued`, then `waiting`, then `queued` again on approval, all for the same job ID. See [Jobs that wait for an environment approval](#jobs-that-wait-for-an-environment-approval).
+- **Isolation.** Files and Docker images left by one job were not visible to the next, and each job ran under its own kernel boot.
+
 ## Known unknowns
 
-These parts could not be checked without a live deployment:
-
-- **Docker networking on Cloudflare.** The wrapper was tested locally under the same daemon restrictions (no iptables, no IP forwarding), but not on Cloudflare's own hosts.
 - **`cf` is in beta.** Its commands and the `cloudflare.config.ts` format can still change before the stable release.
-- **JIT labels.** That GitHub accepts `self-hosted`, `Linux` and `X64` passed explicitly in just-in-time runner labels, as its own API example does.
-- **Rollout grace period.** That the platform honours a 6-hour `rollout.activeGracePeriod`.
-- **Deleting a busy runner.** The idle check relies on GitHub refusing (422) to delete a runner that is mid-job. That closes the race between stopping an idle runner and GitHub assigning it a job.
-- **Environment approvals.** If GitHub sends `queued` before a job's environment approval rather than after it, each approval-gated job will hold an idle runner for up to the idle timeout.
+- **Rollout grace period beyond 20 minutes.** That the platform keeps a mid-job container for the full 6-hour `rollout.activeGracePeriod`.
+- **Relaunch after a late approval, end to end.** The relaunch logic is unit tested and follows the webhook order observed above, but required reviewers need a paid GitHub plan on private repositories, so it has not yet run on a real approval-gated job.
 
 ## Development
 
