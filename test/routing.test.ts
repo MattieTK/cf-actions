@@ -48,13 +48,23 @@ describe("runner names", () => {
 		const size = sizeByLabel("cf-1cpu")!;
 		const name = runnerNameFor(size, 41234567890);
 		expect(name).toBe("cf-1cpu-41234567890");
-		expect(parseRunnerName(name)).toEqual({ size, jobId: 41234567890 });
+		expect(parseRunnerName(name)).toEqual({ size, jobId: 41234567890, attempt: 1 });
+	});
+
+	it("suffixes later launch attempts for the same job, and parses them back", () => {
+		const size = sizeByLabel("cf-2cpu")!;
+		expect(runnerNameFor(size, 777, 1)).toBe("cf-2cpu-777");
+		expect(runnerNameFor(size, 777, 2)).toBe("cf-2cpu-777-2");
+		expect(parseRunnerName("cf-2cpu-777-2")).toEqual({ size, jobId: 777, attempt: 2 });
 	});
 
 	it("rejects names that are not ours", () => {
 		expect(parseRunnerName("GitHub Actions 12")).toBeUndefined();
 		expect(parseRunnerName("cf-3cpu-1")).toBeUndefined();
 		expect(parseRunnerName(null)).toBeUndefined();
+		// Attempt 1 has no suffix, so "-1" (or "-0") is never one of our names.
+		expect(parseRunnerName("cf-2cpu-777-1")).toBeUndefined();
+		expect(parseRunnerName("cf-2cpu-777-0")).toBeUndefined();
 	});
 });
 

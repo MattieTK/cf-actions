@@ -59,18 +59,23 @@ export const DEFAULT_RUNNER_LABELS = ["self-hosted", "Linux", "X64"] as const;
 /**
  * Runner names encode the size and the job that triggered the launch, so an `in_progress`
  * webhook (which names the runner, not the launch) can be traced back to its Durable Object.
+ * A job launched again (for example, approved after its first runner was stopped as idle) gets
+ * a suffixed name per attempt, because GitHub needs unique runner names and the ledger keeps one
+ * row per runner.
  */
-export function runnerNameFor(size: RunnerSize, jobId: number): string {
-	return `${size.label}-${jobId}`;
+export function runnerNameFor(size: RunnerSize, jobId: number, attempt = 1): string {
+	return attempt > 1 ? `${size.label}-${jobId}-${attempt}` : `${size.label}-${jobId}`;
 }
 
-export function parseRunnerName(name: string | null | undefined): { size: RunnerSize; jobId: number } | undefined {
-	const match = /^(cf-[124]cpu)-(\d+)$/.exec(name ?? "");
+export function parseRunnerName(
+	name: string | null | undefined,
+): { size: RunnerSize; jobId: number; attempt: number } | undefined {
+	const match = /^(cf-[124]cpu)-(\d+)(?:-([2-9]|[1-9]\d+))?$/.exec(name ?? "");
 	if (!match) return undefined;
 	const size = sizeByLabel(match[1]!);
 	const jobId = Number(match[2]);
 	if (!size || !Number.isSafeInteger(jobId)) return undefined;
-	return { size, jobId };
+	return { size, jobId, attempt: match[3] ? Number(match[3]) : 1 };
 }
 
 /** Durable Object name for the runner launched for a job. */

@@ -141,6 +141,21 @@ describe("handleWebhook", () => {
 		expect(fixture.runners.get("RUNNER_2CPU/job-777")!.markAssigned).toHaveBeenCalled();
 	});
 
+	it("traces a relaunched runner (suffixed attempt) back to its job's Durable Object and ledger row", async () => {
+		const event = jobEvent("in_progress", { runner_name: "cf-2cpu-777-2" });
+		await handleWebhook(signedRequest(event), fixture.env, context.ctx);
+		expect(fixture.ledger.recordAssigned).toHaveBeenCalledWith("cf-2cpu-777-2", 777, "test", Date.parse("2026-10-11T12:00:00Z"));
+		expect(fixture.runners.get("RUNNER_2CPU/job-777")!.markAssigned).toHaveBeenCalled();
+	});
+
+	it("passes a repeat queued webhook to the job's Runner, which decides whether to relaunch", async () => {
+		// GitHub sends `queued` again once an environment approval is granted.
+		await handleWebhook(signedRequest(jobEvent("queued")), fixture.env, context.ctx);
+		await handleWebhook(signedRequest(jobEvent("queued")), fixture.env, context.ctx);
+		await context.settle();
+		expect(fixture.runners.get("RUNNER_2CPU/job-777")!.launch).toHaveBeenCalledTimes(2);
+	});
+
 	it("frees the launched runner when its job is cancelled before starting", async () => {
 		const event = jobEvent("completed", { conclusion: "cancelled", completed_at: "2026-10-11T12:01:00Z" });
 		await handleWebhook(signedRequest(event), fixture.env, context.ctx);

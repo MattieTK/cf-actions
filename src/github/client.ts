@@ -54,6 +54,12 @@ export interface RunnerStatus {
 	readonly status: string;
 }
 
+export interface JobStatus {
+	/** queued, waiting, in_progress, completed, ... */
+	readonly status: string;
+	readonly name: string;
+}
+
 export class GitHubApp {
 	private keyPromise: Promise<CryptoKey> | undefined;
 
@@ -133,6 +139,19 @@ export class GitHubApp {
 		if (!response.ok) throw new GitHubApiError(response.status, path, await response.text());
 		const runner = (await response.json()) as { busy: boolean; status: string };
 		return { busy: runner.busy, status: runner.status };
+	}
+
+	/** A job's current status and name, or null when the job no longer exists. Needs Actions: read. */
+	async getJob(
+		repo: { readonly owner: string; readonly repo: string; readonly installationId: number },
+		jobId: number,
+	): Promise<JobStatus | null> {
+		const path = `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.repo)}/actions/jobs/${jobId}`;
+		const response = await this.send(path, `Bearer ${await this.installationToken(repo.installationId)}`);
+		if (response.status === 404) return null;
+		if (!response.ok) throw new GitHubApiError(response.status, path, await response.text());
+		const job = (await response.json()) as { status: string; name: string };
+		return { status: job.status, name: job.name };
 	}
 
 	/** Finds a registration by name, for cleaning up one whose ID was never recorded. */

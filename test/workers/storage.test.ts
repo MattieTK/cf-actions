@@ -64,6 +64,22 @@ describe("JobLedger", () => {
 		}
 	});
 
+	it("cancels a pending relaunch that is no longer needed, and stops re-driving it", async () => {
+		const stub = ledger();
+		await stub.recordQueued({ ...request(1), runnerName: "cf-2cpu-1-2" }, "test", T0);
+		await stub.cancelPending("cf-2cpu-1-2", "job is no longer queued (completed)");
+		expect(await stub.get("cf-2cpu-1-2")).toMatchObject({ status: "cancelled", error: "job is no longer queued (completed)" });
+		expect(await stub.listStuckPending(T0 + 10 * MINUTE, T0 + 10 * MINUTE)).toEqual([]);
+	});
+
+	it("leaves rows that are not pending alone when cancelling", async () => {
+		const stub = ledger();
+		await stub.recordQueued(request(1), "test", T0);
+		await stub.markRunning("cf-2cpu-1", 77, T0 + 10);
+		await stub.cancelPending("cf-2cpu-1", "not needed");
+		expect(await stub.get("cf-2cpu-1")).toMatchObject({ status: "running", error: null });
+	});
+
 	it("does not re-drive rows that are no longer pending", async () => {
 		const stub = ledger();
 		await stub.recordQueued(request(1), "test", T0);

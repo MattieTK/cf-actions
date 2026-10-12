@@ -110,6 +110,19 @@ describe("GitHubApp", () => {
 		const app = new GitHubApp({ appId: 1, privateKey }, fetchFn, Date.now, new Map());
 		expect(await app.getRunner(orgTarget, 55)).toEqual({ busy: true, status: "online" });
 	});
+
+	it("looks up a job's status in its repository, for org and personal installs alike", async () => {
+		const { calls, fetchFn } = fakeGitHub({
+			"POST /app/installations/7/access_tokens": tokenRoute,
+			"GET /repos/acme/app/actions/jobs/777": () => json({ id: 777, status: "queued", name: "test", conclusion: null }),
+			"GET /repos/acme/app/actions/jobs/778": () => json({ message: "Not Found" }, 404),
+		});
+		const app = new GitHubApp({ appId: 1, privateKey }, fetchFn, Date.now, new Map());
+		const repo = { owner: "acme", repo: "app", installationId: 7 };
+		expect(await app.getJob(repo, 777)).toEqual({ status: "queued", name: "test" });
+		expect(calls[1]!.auth).toBe("Bearer inst-token");
+		expect(await app.getJob(repo, 778)).toBeNull();
+	});
 });
 
 describe("isBusyRunnerError", () => {

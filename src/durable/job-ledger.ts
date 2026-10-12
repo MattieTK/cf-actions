@@ -195,6 +195,15 @@ export class JobLedger extends DurableObject<Env> {
 		);
 	}
 
+	/** Drops a pending launch that turned out not to be needed, so the backstop stops re-driving it. */
+	async cancelPending(runnerName: string, reason: string): Promise<void> {
+		this.sql(
+			"UPDATE runners SET status = 'cancelled', error = ? WHERE runner_name = ? AND status = 'pending'",
+			reason.slice(0, 1000),
+			runnerName,
+		);
+	}
+
 	async markStopped(
 		runnerName: string,
 		stop: { stoppedAt: number; exitCode: number | null; reason: string },

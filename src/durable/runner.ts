@@ -1,7 +1,8 @@
 import { Container, type StopParams } from "@cloudflare/containers";
-import { GitHubApiError, GitHubApp, isBusyRunnerError } from "../github/client";
+import { GitHubApiError, GitHubApp, type JobStatus, isBusyRunnerError } from "../github/client";
 import type { RunnerTarget } from "../github/types";
 import { type LaunchRequest, ledgerStub, registryStub, runnerTargetFor } from "../launch";
+import { relaunchRequest, shouldRelaunch, shouldRelaunchAfterIdleStop } from "../relaunch";
 import { parseSettings } from "../settings";
 import { DEFAULT_RUNNER_LABELS, type SizeLabel } from "../sizes";
 import { decideWatchdog } from "../watchdog";
@@ -10,9 +11,11 @@ import { decideWatchdog } from "../watchdog";
  * Phases of one job's runner, stored in the Durable Object:
  *
  *   (none) ──mint JIT──▶ launching ──container started──▶ running ──container exited──▶ stopped
- *                          │  ▲                              ▲
- *                          │  └─ start failed: stays launching, retried by the backstop
- *                          └─ container found running without a record: adopted ─┘
+ *                          │  ▲                              ▲                              │
+ *                          │  └─ start failed: stays launching, retried by the backstop     │
+ *                          └─ container found running without a record: adopted ─┘          │
+ *                          ▲                                                                │
+ *                          └── job queued again, never ran one: relaunch as next attempt ───┘
  *
  * The ledger row is always written before the phase changes, so if a ledger write fails the
  * phase still describes the old state and the next onStop/launch/reconcile writes it again.
@@ -23,6 +26,8 @@ interface LaunchState {
 	readonly runnerId?: number;
 	readonly startedAt?: number;
 	readonly assigned: boolean;
+	/** The registration was deleted as idle and the container is being stopped. */
+	readonly released?: boolean;
 	readonly stoppedAt?: number;
 	readonly exitCode?: number | null;
 	readonly stopReason?: string;
@@ -88,6 +93,24 @@ abstract class RunnerContainer extends Container<Env> {
 	/** Idempotent: safe to call for every webhook delivery and every backstop pass. */
 	async launch(request: LaunchRequest): Promise<LaunchOutcome> {
 		const existing = await this.loadState();
+		// Calls to GitHub yield the Durable Object's input gate, so coalesce concurrent launches.
+		const coalesce = (work: () => Promise<LaunchOutcome>) => {
+			this.launching ??= work().finally(() => {
+				this.launching = undefined;
+			});
+			return this.launching;
+		};
+
+		// GitHub sends `queued` before an environment approval and again after it. A runner that
+		// stopped without running a job (the idle watchdog stopped it while the job awaited
+		// approval) may need a successor.
+		if (existing?.phase === "stopped" && !existing.assigned) return coalesce(() => this.relaunch(existing, request));
+		if (existing?.phase === "running" && existing.released && !existing.assigned) {
+			// Its container is being stopped as idle, and a new one cannot start alongside it. Record
+			// the next attempt; the backstop launches it once the container has exited.
+			await this.recordRelaunch(existing, relaunchRequest(existing.request, request));
+			return "retry-later";
+		}
 		if (existing?.phase === "running" || existing?.phase === "stopped") {
 			// The ledger may have missed the last transition; repeat it (the writes are idempotent).
 			await this.syncLedger(existing).catch((error: unknown) =>
@@ -95,11 +118,49 @@ abstract class RunnerContainer extends Container<Env> {
 			);
 			return "already-started";
 		}
-		// Calls to GitHub yield the Durable Object's input gate, so coalesce concurrent launches.
-		this.launching ??= this.doLaunch(request).finally(() => {
-			this.launching = undefined;
-		});
-		return this.launching;
+		// A relaunch stores its request before starting; keep using it rather than the first attempt's.
+		return coalesce(() => this.doLaunch(existing?.request ?? request));
+	}
+
+	/**
+	 * Starts the next attempt for a job whose runner stopped without running it, if GitHub says
+	 * the job is queued. Otherwise drops any relaunch the backstop recorded for it.
+	 */
+	private async relaunch(existing: LaunchState, incoming: LaunchRequest): Promise<LaunchOutcome> {
+		const next = relaunchRequest(existing.request, incoming);
+		const job = await this.lookUpJob(existing.request);
+		const status = job === undefined ? undefined : (job?.status ?? null);
+		if (!shouldRelaunch(existing, status)) {
+			await ledgerStub(this.env).cancelPending(next.runnerName, `job is no longer queued (${status ?? "gone"})`);
+			await this.syncLedger(existing).catch((error: unknown) =>
+				console.error(`ledger sync for ${existing.request.runnerName} failed`, errorMessage(error)),
+			);
+			return "already-started";
+		}
+		await this.recordRelaunch(existing, next, job?.name);
+		// Defensive: the stopped phase is recorded when the container exits, so this should not happen.
+		if (this.ctx.container?.running) return "retry-later";
+		console.log(`relaunching ${existing.request.runnerName} as ${next.runnerName} (job ${status ?? "status unknown"})`);
+		await this.saveState({ request: next, phase: "launching", assigned: false });
+		return this.doLaunch(next);
+	}
+
+	/** Writes the ledger row for a relaunch first, so the backstop finishes it if this one stops short. */
+	private async recordRelaunch(existing: LaunchState, next: LaunchRequest, jobName?: string): Promise<void> {
+		const ledger = ledgerStub(this.env);
+		const name = jobName ?? (await ledger.get(existing.request.runnerName))?.jobName ?? `job ${next.jobId}`;
+		await ledger.recordQueued(next, name, Date.now());
+	}
+
+	/** The job's status from GitHub: null if it no longer exists, undefined if the lookup failed. */
+	private async lookUpJob(request: LaunchRequest): Promise<JobStatus | null | undefined> {
+		try {
+			const github = await this.github(request.appId);
+			return await github.getJob(request, request.jobId);
+		} catch (error) {
+			console.error(`job lookup for ${request.runnerName} failed`, errorMessage(error));
+			return undefined;
+		}
 	}
 
 	private async syncLedger(state: LaunchState): Promise<void> {
@@ -275,9 +336,24 @@ abstract class RunnerContainer extends Container<Env> {
 			console.error(`idle check for ${state.request.runnerName} failed`, errorMessage(error));
 			return false;
 		}
+		// Until onStop records the stop, a `queued` webhook for this job must not count it as running.
+		await this.saveState({ ...state, released: true });
 		await this.noteStopReason(state, reason);
 		await this.stop();
+		if (reason === "idle-timeout") await this.relaunchIfStillQueued(state);
 		return true;
+	}
+
+	/**
+	 * After removing an idle runner: if its job was approved just before the idle check, the second
+	 * `queued` webhook found this runner still alive, so record the next attempt for the backstop.
+	 */
+	private async relaunchIfStillQueued(state: LaunchState): Promise<void> {
+		const job = await this.lookUpJob(state.request);
+		if (!shouldRelaunchAfterIdleStop(job === undefined ? undefined : (job?.status ?? null))) return;
+		await this.recordRelaunch(state, relaunchRequest(state.request, state.request), job?.name).catch((error: unknown) =>
+			console.error(`recording relaunch for ${state.request.runnerName} failed`, errorMessage(error)),
+		);
 	}
 
 	override async onStop(params: StopParams): Promise<void> {
