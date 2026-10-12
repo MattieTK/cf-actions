@@ -18,6 +18,15 @@ export class GitHubApiError extends Error {
 	}
 }
 
+/**
+ * GitHub answers a delete of a runner that is mid-job with 422 and "Runner <name> is currently
+ * running a job and cannot be deleted." It also uses 422 for validation errors and rate limiting,
+ * so only that message means busy.
+ */
+export function isBusyRunnerError(error: unknown): boolean {
+	return error instanceof GitHubApiError && error.status === 422 && /currently running a job/i.test(error.body);
+}
+
 interface CachedToken {
 	readonly token: string;
 	readonly expiresAt: number;

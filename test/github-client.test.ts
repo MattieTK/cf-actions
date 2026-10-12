@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { GitHubApiError, GitHubApp, convertManifestCode, nextPageUrl } from "../src/github/client";
+import { GitHubApiError, GitHubApp, convertManifestCode, isBusyRunnerError, nextPageUrl } from "../src/github/client";
 import type { RunnerTarget } from "../src/github/types";
 
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -109,6 +109,26 @@ describe("GitHubApp", () => {
 		});
 		const app = new GitHubApp({ appId: 1, privateKey }, fetchFn, Date.now, new Map());
 		expect(await app.getRunner(orgTarget, 55)).toEqual({ busy: true, status: "online" });
+	});
+});
+
+describe("isBusyRunnerError", () => {
+	// The body GitHub returned when a busy runner was deleted (cf-actions-trials, 12 Oct 2026).
+	const busyBody = JSON.stringify({
+		message: "Bad request - Runner cf-1cpu-114614702758 is currently running a job and cannot be deleted.",
+		documentation_url: "https://docs.github.com/rest/actions/self-hosted-runners#delete-a-self-hosted-runner-from-a-repository",
+		status: "422",
+	});
+
+	it("recognises GitHub's refusal to delete a runner that is running a job", () => {
+		expect(isBusyRunnerError(new GitHubApiError(422, "/repos/a/b/actions/runners/5", busyBody))).toBe(true);
+	});
+
+	it("does not treat other 422s, such as rate limiting, as busy", () => {
+		const spammed = JSON.stringify({ message: "Validation Failed", errors: [{ code: "custom", message: "endpoint has been spammed" }] });
+		expect(isBusyRunnerError(new GitHubApiError(422, "/repos/a/b/actions/runners/5", spammed))).toBe(false);
+		expect(isBusyRunnerError(new GitHubApiError(500, "/repos/a/b/actions/runners/5", busyBody))).toBe(false);
+		expect(isBusyRunnerError(new Error("currently running a job"))).toBe(false);
 	});
 });
 

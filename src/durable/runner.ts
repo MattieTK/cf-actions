@@ -1,5 +1,5 @@
 import { Container, type StopParams } from "@cloudflare/containers";
-import { GitHubApiError, GitHubApp } from "../github/client";
+import { GitHubApiError, GitHubApp, isBusyRunnerError } from "../github/client";
 import type { RunnerTarget } from "../github/types";
 import { type LaunchRequest, ledgerStub, registryStub, runnerTargetFor } from "../launch";
 import { parseSettings } from "../settings";
@@ -265,12 +265,13 @@ abstract class RunnerContainer extends Container<Env> {
 			}
 			await github.deleteRunner(target, state.runnerId);
 		} catch (error) {
-			if (error instanceof GitHubApiError && error.status === 422) {
+			if (isBusyRunnerError(error)) {
 				// Busy after all: it picked up a job between the two calls.
 				await this.saveState({ ...state, assigned: true });
 				return false;
 			}
-			// Cannot tell whether it is safe to stop; try again on the next tick.
+			// Cannot tell whether it is safe to stop (including other 422s, such as rate limiting);
+			// try again on the next tick.
 			console.error(`idle check for ${state.request.runnerName} failed`, errorMessage(error));
 			return false;
 		}
